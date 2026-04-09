@@ -1,4 +1,4 @@
-# NextLVL Quest AI Backend for Vercel (Groq v3)
+# NextLVL Quest AI Backend for Vercel (Groq v5)
 
 ## Что это
 Vercel-backend для AI-генерации квестов в `NextLVL Quest`, переведённый на Groq.
@@ -15,7 +15,7 @@ Environment Variables:
 ## Модель по умолчанию
 `openai/gpt-oss-20b`
 
-## Особенность v3
+## Особенность v5
 Валидация и восстановление доски происходят на стороне backend, поэтому ответ модели может быть частично неточным, но backend всё равно соберёт корректную доску из `allowed_templates`.
 
 ## После деплоя
