@@ -74,7 +74,7 @@ export default async function handler(req, res) {
   try {
     const completion = await client.chat.completions.create({
       model,
-      temperature: 0.2,
+      temperature: 0.45,
       messages: [
         { role: "system", content: buildSystemPrompt() },
         { role: "user", content: buildUserPrompt(payload) }
