@@ -1,7 +1,12 @@
 import OpenAI from "openai";
 import crypto from "node:crypto";
-import { questBoardModelSchema, sanitizeBoardFromModel, validateBoard } from "../../lib/schema.mjs";
 import { buildSystemPrompt, buildUserPrompt } from "../../lib/prompt.mjs";
+import { buildBoardFromAiResult, extractJsonObject, validateBoard } from "../../lib/schema.mjs";
+
+const client = new OpenAI({
+  apiKey: process.env.GROQ_API_KEY,
+  baseURL: process.env.GROQ_BASE_URL || "https://api.groq.com/openai/v1"
+});
 
 function sendJson(res, status, body) {
   res.statusCode = status;
@@ -16,60 +21,33 @@ function readBearer(req) {
   return match ? match[1] : null;
 }
 
-function readJsonBody(req) {
+function parsePayload(req) {
   if (typeof req.body === "string") {
-    return JSON.parse(req.body || "{}");
+    return req.body ? JSON.parse(req.body) : {};
   }
   return req.body ?? {};
 }
 
-function parseModelJson(response) {
-  const message = response?.choices?.[0]?.message;
-  const content = message?.content;
-
-  if (typeof content === "string" && content.trim()) {
-    return JSON.parse(content);
+function parseModelText(completion) {
+  const text = completion?.choices?.[0]?.message?.content;
+  if (typeof text !== "string" || !text.trim()) {
+    throw new Error("Groq returned an empty response");
   }
-
-  if (Array.isArray(content)) {
-    const text = content
-      .map((item) => {
-        if (typeof item === "string") return item;
-        if (typeof item?.text === "string") return item.text;
-        if (typeof item?.output_text === "string") return item.output_text;
-        return "";
-      })
-      .join("\n")
-      .trim();
-
-    if (text) {
-      return JSON.parse(text);
-    }
-  }
-
-  throw new Error("No JSON content found in Groq response");
+  return text;
 }
 
 function finalizeBoard(board) {
   const now = Math.floor(Date.now() / 1000);
   return {
-    board_id: crypto.randomUUID(),
+    board_id: typeof board.board_id === "string" && board.board_id.trim()
+      ? board.board_id.trim()
+      : crypto.randomUUID(),
     generated_at: now,
     expires_at: now + 24 * 60 * 60,
-    quests: [...board.quests].sort((a, b) => a.slot - b.slot)
+    quests: [...board.quests]
+      .sort((a, b) => a.slot - b.slot)
+      .map((q, index) => ({ ...q, slot: index }))
   };
-}
-
-function createGroqClient() {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) {
-    return null;
-  }
-
-  return new OpenAI({
-    apiKey,
-    baseURL: "https://api.groq.com/openai/v1"
-  });
 }
 
 export default async function handler(req, res) {
@@ -86,55 +64,35 @@ export default async function handler(req, res) {
     }
   }
 
-  const client = createGroqClient();
-  if (!client) {
+  if (!process.env.GROQ_API_KEY) {
     return sendJson(res, 500, { error: "GROQ_API_KEY is not configured" });
   }
 
-  let payload;
-  try {
-    payload = readJsonBody(req);
-  } catch (error) {
-    return sendJson(res, 400, { error: "Invalid JSON body", details: error?.message || String(error) });
-  }
-
+  const payload = parsePayload(req);
   const model = process.env.GROQ_MODEL || "openai/gpt-oss-20b";
 
   try {
-    const response = await client.chat.completions.create({
+    const completion = await client.chat.completions.create({
       model,
       temperature: 0.2,
-      n: 1,
       messages: [
-        {
-          role: "system",
-          content: buildSystemPrompt()
-        },
-        {
-          role: "user",
-          content: buildUserPrompt(payload)
-        }
-      ],
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "nextlvl_quest_board",
-          strict: true,
-          schema: questBoardModelSchema
-        }
-      }
+        { role: "system", content: buildSystemPrompt() },
+        { role: "user", content: buildUserPrompt(payload) }
+      ]
     });
 
-    const modelBoard = parseModelJson(response);
-    const sanitizedBoard = sanitizeBoardFromModel(modelBoard, payload);
-    const board = finalizeBoard(sanitizedBoard);
-    const validationError = validateBoard(board, payload);
+    const rawText = parseModelText(completion);
+    const rawJson = extractJsonObject(rawText);
+    const aiData = JSON.parse(rawJson);
+    const board = finalizeBoard(buildBoardFromAiResult(payload, aiData));
+    const validationError = validateBoard(board);
 
     if (validationError) {
       return sendJson(res, 502, {
         error: "AI returned an invalid board",
         details: validationError,
-        model
+        model,
+        raw_preview: rawText.slice(0, 1200)
       });
     }
 
